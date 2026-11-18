@@ -1,0 +1,236 @@
+[
+  {
+    "id": "tab_iot_alerts",
+    "type": "tab",
+    "label": "IoT Device Alerts",
+    "disabled": false,
+    "info": "Fault and offline alerts for MQTT-connected circuit breakers → Discord.\nConfigure with env vars: MQTT_HOST, MQTT_PORT, DISCORD_CHANNEL_ID, PROJECT_NAME.",
+    "env": [
+      {
+        "name": "PROJECT_NAME",
+        "value": "DEMO PROJECT",
+        "type": "str"
+      },
+      {
+        "name": "DISCORD_CHANNEL_ID",
+        "value": "DISCORD_CHANNEL_ID",
+        "type": "env"
+      }
+    ]
+  },
+  {
+    "id": "c_fault",
+    "type": "comment",
+    "z": "tab_iot_alerts",
+    "name": "Fault alerts (real time)",
+    "info": "",
+    "x": 150,
+    "y": 60,
+    "wires": []
+  },
+  {
+    "id": "mqtt_in",
+    "type": "mqtt in",
+    "z": "tab_iot_alerts",
+    "name": "Device events",
+    "topic": "devices/+/messages/events/",
+    "qos": "1",
+    "datatype": "buffer",
+    "broker": "broker",
+    "nl": false,
+    "rap": true,
+    "rh": 0,
+    "inputs": 0,
+    "x": 150,
+    "y": 120,
+    "wires": [
+      [
+        "fn_fault"
+      ]
+    ]
+  },
+  {
+    "id": "fn_fault",
+    "type": "function",
+    "z": "tab_iot_alerts",
+    "name": "Check fault",
+    "func": "// Runs on every MQTT message: record last-seen time, then check for a fault.\nconst FAULT_CODES = { 1: 'ARC', 2: 'LEAKAGE CURRENT', 4: 'UNDER VOLTAGE', 8: 'OVER VOLTAGE',\n    16: 'OVER CURRENT', 32: 'SHORT CIRCUIT', 64: 'OVER TEMP', 128: 'EARTHQUAKE',\n    65: 'SEND ORDER SC ALARM', 67: 'SEND ORDER ARC ALARM' };\nconst NON_STATUS = [61, 62, 63, 67];\nconst COOLDOWN = 10 * 60 * 1000;\n\nconst uuid = msg.topic.split('/')[1];\nconst data = msg.payload;\nconst now = Date.now();\nconst registry = flow.get('registry') || [];\nconst device = registry.find(d => d.uuid === uuid);\nif (!device) return null;                       // not one of ours\n\nconst lastSeen = flow.get('lastSeen') || {};\nlastSeen[uuid] = now;\nflow.set('lastSeen', lastSeen);\n\nif (data[0] !== 100 || NON_STATUS.includes(data[1]) || !data[13]) return null;\n\nconst code = data[13];\nconst fault = code === 14 ? 'FAULT TRIP (14, ' + data[14] + ')' : (FAULT_CODES[code] || 'UNKNOWN (' + code + ')');\n\nconst muted = flow.get('muted') || [];\nif (muted.some(m => m.uuid === uuid && m.fault === fault)) return null;\n\nconst lastAlert = flow.get('lastAlert') || {};\nconst prev = lastAlert[uuid];\nif (prev && prev.fault === fault && now - prev.at < COOLDOWN) return null;   // same fault, still cooling down\n\nlastAlert[uuid] = { at: now, fault: fault };\nflow.set('lastAlert', lastAlert);\n\nmsg.channel = env.get('DISCORD_CHANNEL_ID');\nmsg.payload = [\n    '### 📍 ' + env.get('PROJECT_NAME'),\n    '**📌 Device:** ' + device.name,\n    '**🔌 UUID:** ' + uuid,\n    '**⚠️ Fault:** ' + fault,\n    '**🔗 Docs:** ' + (device.docUrl || 'N/A'),\n    '**📊 Dashboard:** ' + (device.dashboardUrl || 'N/A')\n].join('\\n');\nreturn msg;",
+    "outputs": 1,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "// Device registry — replace with your own devices (or load from a database / API).\nflow.set('registry', [\n    { uuid: 'demo-01', name: 'Demo Breaker 01', docUrl: 'https://example.com/docs/demo-01', dashboardUrl: 'https://grafana.example.com/d/demo?var-device=demo-01' },\n    { uuid: 'demo-02', name: 'Demo Breaker 02', docUrl: 'https://example.com/docs/demo-02', dashboardUrl: 'https://grafana.example.com/d/demo?var-device=demo-02' },\n    { uuid: 'demo-03', name: 'Demo Breaker 03 (3-phase)', docUrl: '', dashboardUrl: '' }\n]);\n// Alerts the team has silenced, e.g. { uuid: 'demo-02', fault: 'OFFLINE' }\nflow.set('muted', []);",
+    "finalize": "",
+    "libs": [],
+    "x": 380,
+    "y": 120,
+    "wires": [
+      [
+        "discord",
+        "debug_out"
+      ]
+    ]
+  },
+  {
+    "id": "c_offline",
+    "type": "comment",
+    "z": "tab_iot_alerts",
+    "name": "Offline check (every 10 min)",
+    "info": "",
+    "x": 160,
+    "y": 200,
+    "wires": []
+  },
+  {
+    "id": "tick",
+    "type": "inject",
+    "z": "tab_iot_alerts",
+    "name": "Every 10 min",
+    "props": [
+      {
+        "p": "payload"
+      }
+    ],
+    "repeat": "600",
+    "crontab": "",
+    "once": true,
+    "onceDelay": "60",
+    "topic": "",
+    "payload": "",
+    "payloadType": "date",
+    "x": 150,
+    "y": 260,
+    "wires": [
+      [
+        "fn_offline"
+      ]
+    ]
+  },
+  {
+    "id": "fn_offline",
+    "type": "function",
+    "z": "tab_iot_alerts",
+    "name": "Check offline",
+    "func": "// Runs every 10 minutes: report devices that have gone quiet.\nconst THRESHOLD = 10 * 60 * 1000;\nconst COOLDOWN = 10 * 60 * 1000;\nconst now = Date.now();\nconst registry = flow.get('registry') || [];\nconst lastSeen = flow.get('lastSeen') || {};\nconst lastNotified = flow.get('lastOfflineAlert') || {};\nconst muted = flow.get('muted') || [];\n\nconst offline = registry.filter(d =>\n    now - (lastSeen[d.uuid] || 0) > THRESHOLD &&\n    !muted.some(m => m.uuid === d.uuid && m.fault === 'OFFLINE') &&\n    now - (lastNotified[d.uuid] || 0) >= COOLDOWN\n);\nif (offline.length === 0) return null;\n\noffline.forEach(d => { lastNotified[d.uuid] = now; });\nflow.set('lastOfflineAlert', lastNotified);\n\nlet text = '### 📍 ' + env.get('PROJECT_NAME') + ' — OFFLINE\\n' + offline.map(d => [\n    '====================',\n    '📍 **' + d.name + '**',\n    '🔑 UUID: ' + d.uuid,\n    '📊 Dashboard: ' + (d.dashboardUrl || 'N/A')\n].join('\\n')).join('\\n');\nif (text.length > 2000) text = text.slice(0, 1990) + '\\n…';     // Discord message limit\n\nmsg.channel = env.get('DISCORD_CHANNEL_ID');\nmsg.payload = text;\nreturn msg;",
+    "outputs": 1,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 380,
+    "y": 260,
+    "wires": [
+      [
+        "discord",
+        "debug_out"
+      ]
+    ]
+  },
+  {
+    "id": "c_test",
+    "type": "comment",
+    "z": "tab_iot_alerts",
+    "name": "Test: send a simulated fault",
+    "info": "",
+    "x": 160,
+    "y": 340,
+    "wires": []
+  },
+  {
+    "id": "test_btn",
+    "type": "inject",
+    "z": "tab_iot_alerts",
+    "name": "Simulate fault",
+    "props": [
+      {
+        "p": "payload"
+      }
+    ],
+    "repeat": "",
+    "crontab": "",
+    "once": false,
+    "onceDelay": 0.1,
+    "topic": "",
+    "payload": "",
+    "payloadType": "date",
+    "x": 150,
+    "y": 400,
+    "wires": [
+      [
+        "fn_sim"
+      ]
+    ]
+  },
+  {
+    "id": "fn_sim",
+    "type": "function",
+    "z": "tab_iot_alerts",
+    "name": "Fake device message",
+    "func": "// Test helper: publishes a fake fault from a random demo device.\nconst registry = flow.get('registry') || [];\nconst codes = [1, 2, 4, 8, 16, 32, 64];\nconst device = registry[Math.floor(Math.random() * registry.length)];\nconst data = new Array(32).fill(0);\ndata[0] = 100;\ndata[1] = 1;\ndata[13] = codes[Math.floor(Math.random() * codes.length)];\nmsg.topic = 'devices/' + device.uuid + '/messages/events/';\nmsg.payload = Buffer.from(data);\nreturn msg;",
+    "outputs": 1,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 380,
+    "y": 400,
+    "wires": [
+      [
+        "mqtt_out"
+      ]
+    ]
+  },
+  {
+    "id": "mqtt_out",
+    "type": "mqtt out",
+    "z": "tab_iot_alerts",
+    "name": "Publish test frame",
+    "topic": "",
+    "qos": "0",
+    "retain": "false",
+    "broker": "broker",
+    "x": 620,
+    "y": 400,
+    "wires": []
+  },
+  {
+    "id": "discord",
+    "type": "discordSendMessage",
+    "z": "tab_iot_alerts",
+    "name": "Discord",
+    "channel": "",
+    "token": "",
+    "x": 640,
+    "y": 160,
+    "wires": []
+  },
+  {
+    "id": "debug_out",
+    "type": "debug",
+    "z": "tab_iot_alerts",
+    "name": "Alert text",
+    "active": true,
+    "tosidebar": true,
+    "console": false,
+    "tostatus": false,
+    "complete": "payload",
+    "targetType": "msg",
+    "x": 650,
+    "y": 220,
+    "wires": []
+  },
+  {
+    "id": "broker",
+    "type": "mqtt-broker",
+    "name": "Device broker",
+    "broker": "${MQTT_HOST}",
+    "port": "${MQTT_PORT}",
+    "clientid": "",
+    "autoConnect": true,
+    "usetls": false,
+    "protocolVersion": "4",
+    "keepalive": "60",
+    "cleansession": true
+  }
+]

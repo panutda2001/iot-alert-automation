@@ -1,0 +1,16 @@
+{
+  "name": "iot-alert-automation",
+  "version": "1.0.0",
+  "description": "Fault and offline alerts for MQTT-connected smart circuit breakers, delivered to Discord via Node-RED",
+  "main": "src/alerts.js",
+  "scripts": {
+    "test": "node --test",
+    "build:flow": "node scripts/build-flow.js"
+  },
+  "keywords": ["node-red", "mqtt", "iot", "discord", "alerts"],
+  "author": "Panutda Wongsa",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  }
+}
